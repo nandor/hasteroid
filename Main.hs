@@ -6,8 +6,9 @@ module Main where
 
 
 import Data.IORef
+import Data.List
 import Data.Time
-import Debug.Trace
+import Data.Fixed
 import Control.Monad
 import Control.Applicative
 import System.Random
@@ -26,12 +27,7 @@ type Collision = ( Asteroid, Bullet )
 data Bullet = Bullet { bPos :: Vec2f
                      , bRot :: GLfloat
                      }
-                     deriving (Show)
-
-
-instance Eq Bullet where
-  (Bullet ( x, y ) r) == (Bullet ( x', y' ) r' )
-    = abs (x - x') <= 1 && abs (y - y') <= 1 && abs (r - r') <= 1
+                     deriving (Eq, Show)
 
 
 data Asteroid = Asteroid { aSize :: GLfloat
@@ -52,28 +48,27 @@ data State = State { sSize      :: IORef Vec2f
                    , sBullets   :: IORef [ Bullet ]
                    , sCount     :: IORef Int
                    , sLastFrame :: IORef UTCTime
-                   , sScore     :: IORef Int
+                   , sScore     :: IORef GLfloat
+                   , sLives     :: IORef Int
                    }
 
 
 --------------------------------------------------------------------------------
 -- Helper functions
 --------------------------------------------------------------------------------
-color4f :: GLfloat -> GLfloat -> GLfloat -> GLfloat -> IO ()
-color4f r g b a
-  = color $ Color4 r g b a
+color3f :: GLfloat -> GLfloat -> GLfloat -> IO ()
+color3f r g b
+  = color $ Color3 r g b
 
 
-vertex3f :: GLfloat -> GLfloat -> GLfloat -> IO ()
-vertex3f x y z
-  = vertex $ Vertex3 x y z
+vertex2f :: GLfloat -> GLfloat -> IO ()
+vertex2f x y
+  = vertex $ Vertex2 x y
 
 
-wrap :: GLfloat -> GLfloat -> GLfloat
-wrap x m
-  | x < 0 = m
-  | x > m = 0
-  | otherwise = x
+rasterPos2f :: GLfloat -> GLfloat -> IO ()
+rasterPos2f x y
+  = rasterPos $ Vertex2 x y
 
 
 clamp ::GLfloat -> GLfloat -> GLfloat -> GLfloat
@@ -91,13 +86,15 @@ render State {..} = do
   rot       <- get sRot
   asteroids <- get sAsteroids
   bullets   <- get sBullets
+  score     <- get sScore
+  lives     <- get sLives
 
   clear [ ColorBuffer ]
 
+  -- Set up matrices
   matrixMode $= Projection
   loadIdentity
   ortho 0.0 (realToFrac w) (realToFrac h) 0.0 (-1.0) 1.0
-
   matrixMode $= Modelview 0
   loadIdentity
 
@@ -105,50 +102,77 @@ render State {..} = do
   mapM_ renderAsteroid asteroids
   mapM_ renderBullet bullets
 
-  translate $ Vector3 x y 0.0
+  -- Render the player
+  preservingMatrix $ do
+    translate $ Vector3 x y 0.0
+    rotate rot $ Vector3 0 0 1
+    color3f 1 1 1
 
-  -- Render player
-  rotate rot $ Vector3 0 0 1
-  renderPrimitive LineLoop $ do
-    color4f 1 1 1 1
-    vertex3f (-5) (-5) ( 0)
-    vertex3f (10) ( 0) ( 0)
-    vertex3f (-5) ( 5) ( 0)
+    renderPrimitive LineLoop $ do
+      vertex2f (-5) (-5)
+      vertex2f (10) ( 0)
+      vertex2f (-5) ( 5)
+
+
+  -- Score
+  rasterPos2f 5 15
+  renderString Fixed8By13 $ show (floor score)
+
+  -- Game over message
+  when (lives <= 0) $ do
+    rasterPos2f (w / 2 - 25) (h / 2 - 20)
+    renderString Fixed8By13 $ "Score: " ++ show score
+    rasterPos2f (w / 2 - 100) (h / 2)
+    renderString Fixed8By13 $ "Game over! Press X to restart"
+
+  -- Health
+  mapM_ (renderHealth . fromIntegral) [1..lives]
+
 
   flush
 
 
 renderAsteroid :: Asteroid -> IO ()
-renderAsteroid (Asteroid s r ( x, y ) _) 
+renderAsteroid Asteroid { aSize, aRot, aPos = ( x, y )}
   = preservingMatrix $ do
       translate $ Vector3 x y 0
-      rotate r $ Vector3 0 0 1
-      scale s s s
-      color4f 1 0 0 1
+      rotate aRot $ Vector3 0 0 1
+      scale aSize aSize aSize
+      color3f 1 1 1
 
       renderPrimitive LineLoop $ do
-        vertex3f 1.0      1.0  0.0
-        vertex3f 0.1    (-0.4) 0.0
-        vertex3f 1.0    (-0.5) 0.0
-        vertex3f (-0.4) (-1.0) 0.0
-        vertex3f (-1.0) (-0.2) 0.0
-        vertex3f (-0.8)   0.2  0.0
-        vertex3f (-0.4)   0.1  0.0
-        vertex3f (-0.1)   1.0  0.0
+        vertex2f   1.0    1.0 
+        vertex2f   0.1  (-0.4)
+        vertex2f   1.0  (-0.5)
+        vertex2f (-0.4) (-1.0)
+        vertex2f (-1.0) (-0.2)
+        vertex2f (-0.8)   0.2 
+        vertex2f (-0.4)   0.1 
+        vertex2f (-0.1)   1.0 
 
 
 renderBullet :: Bullet -> IO ()
-renderBullet (Bullet ( x, y) r)
+renderBullet Bullet { bPos = ( x, y ), bRot}
   = preservingMatrix $ do
       translate $ Vector3 x y 0
-      rotate r $ Vector3 0 0 1
-      color4f 0 1 0 1
+      rotate bRot $ Vector3 0 0 1
+      color3f 1 0 0
 
       renderPrimitive LineLoop $ do
-        vertex3f (-2) (-2) ( 0)
-        vertex3f ( 2) ( 0) ( 0)
-        vertex3f (-2) ( 2) ( 0)
+        vertex2f (-2) (-2)
+        vertex2f ( 2) ( 0)
+        vertex2f (-2) ( 2)
 
+
+renderHealth :: GLfloat -> IO ()
+renderHealth count
+  = preservingMatrix $ do
+      translate $ Vector3 (50 + count * 10) 10 0
+      renderPrimitive Quads $ do
+        vertex2f 0 0
+        vertex2f 0 5
+        vertex2f 5 5
+        vertex2f 5 0
 
 --------------------------------------------------------------------------------
 -- Update
@@ -164,87 +188,112 @@ idle state@State {..} = do
   bullets   <- get sBullets  
   count     <- get sCount
   moving    <- get sMoving
+  lives     <- get sLives
 
-  -- Compute the time elapsed since the last frame
-  thisFrame <- getCurrentTime
-  lastFrame <- get sLastFrame
-  sLastFrame $= thisFrame
+  -- Don't do anything if we're not playing
+  when (lives > 0) $ do
+    -- Compute the time elapsed since the last frame
+    thisFrame <- getCurrentTime
+    lastFrame <- get sLastFrame
+    sLastFrame $= thisFrame
 
-  let dt = 500 * (realToFrac $ diffUTCTime thisFrame lastFrame)
-  
-  -- Update entites
-  let ( asteroids', bullets' ) = update w h dt asteroids bullets
-
-  sBullets   $= bullets'
-  sAsteroids $= map (updateAsteroid dt w h) asteroids'
-
-  let asteroidCount = length asteroids'
-
-  when (asteroidCount < count) $
-    replicateM_ (count - asteroidCount) (genAsteroid state)
+    let dt = 500 * (realToFrac $ diffUTCTime thisFrame lastFrame)
     
-  -- Update rotation
-  when rotLeft $ sRot $~! (+ dt)
-  when rotRight $ sRot $~! (+ (-dt))
-  rot <- get sRot
+    -- Update entites
+    let ( asteroids', bullets' ) = update w h dt asteroids bullets
 
-  when moving $ do
-    let [ dx, dy ] = [ cos, sin ] <*> pure (rot * pi / 180)
-    sPos $= ( wrap (x + dx * dt * 0.5) w, wrap (y + dy * dt * 0.5) h )
+    sBullets   $= bullets'
+    sAsteroids $= map (moveAsteroid w h dt) asteroids'
+
+    -- Cound the score
+    sScore $~! (+) (foldl (\a x-> a + score x) 0 (asteroids \\ asteroids'))
+
+    -- Check if player was hit
+    when (any (hit x y) asteroids') $ do
+      sLives     $~! (+(-1))
+      sPos       $= ( w / 2, h / 2 )
+      sAsteroids $= [ ]
+      sBullets   $= [ ]
+
+    -- Generate new asteroids
+    let asteroidCount = length asteroids'
+    when (asteroidCount < count) $
+      replicateM_ (count - asteroidCount) (genAsteroid state)
+      
+    -- Update rotation
+    when rotLeft $ sRot $~! (+ dt)
+    when rotRight $ sRot $~! (+ (-dt))
+    rot <- get sRot
+
+    -- Update movement
+    when moving $ do
+      let [ dx, dy ] = [ cos, sin ] <*> pure (rot * pi / 180)
+      sPos $= ( (x + dx * dt * 0.5) `mod'` w, (y + dy * dt * 0.5) `mod'` h )
 
   postRedisplay Nothing
 
 
+hit :: GLfloat -> GLfloat -> Asteroid -> Bool
+hit x y Asteroid { aSize, aPos = ( x', y' )}
+  = abs (x - x') < aSize && abs (y - y') < aSize
+
+
+-- Computes the score given for destroying an asteroid
+score :: Asteroid -> GLfloat
+score (Asteroid s r ( x, y ) ( vx, vy ))
+  = vel * 100
+  where
+    vel = sqrt (vx * vx + vy * vy)
+
+
+-- Updates the position of an asteroid
+moveAsteroid :: GLfloat -> GLfloat -> GLfloat ->Asteroid -> Asteroid
+moveAsteroid w h dt a@(Asteroid s r ( x, y ) ( vx, vy ))
+  = a { aPos = ( (x + vx * dt) `mod'` w, (y + vy * dt) `mod'` h ) }
+    
+
 update :: GLfloat 
-       -> GLfloat 
-       -> GLfloat 
-       -> Asteroids 
+       -> GLfloat
+       -> GLfloat
+       -> Asteroids   
        -> Bullets 
        -> ( Asteroids, Bullets )
 update w h dt as
   = foldr check ( as, [ ] )
-  where
+  where  
+    -- Check for collisions between bullets and asteroids
     check (Bullet ( x, y ) r ) ( as, bs )
-      | outside || any hitA as = ( newAsteroids, bs )
-      | otherwise             = ( as, newBullet : bs ) 
+      | outside || any hitA as = ( concatMap split as, bs )
+      | otherwise              = ( as, newBullet : bs ) 
       where
         -- Check if the bullet is outside the screen
-        outside 
+        outside
           = x < -w || w < x || y < -h || h < y
 
         -- Bullet with updated position
         newBullet
-          = Bullet ( x + dx * dt, y + dy * dt ) r        
+          = Bullet ( x + dx * dt, y + dy * dt ) r
           where
             [ dx, dy ] = [ cos, sin ] <*> pure (r * pi / 180)
 
         -- Check if the bullet hit an asteroid
-        hitA Asteroid { aSize = s, aPos = ( x', y' ) }
-          = abs (x - x') <= s && abs (y - y') <= s
+        hitA Asteroid { aSize, aPos = ( x', y' ) }
+          = abs (x - x') <= aSize && abs (y - y') <= aSize
 
-        -- Updated asteroid list
-        newAsteroids 
-          = concatMap split as
+        -- Splits an asteroid in two   
+        split a@(Asteroid s r ( x', y' ) ( vx, vy ))
+          | hit x y a && s < 10 = [ ]
+          | hit x y a && s > 10 = [ shard 0.2, shard (-0.2) ]
+          | otherwise = [ a ]
           where
-            split a@Asteroid { aSize = s, aPos = ( x', y' ), aVel = ( vx, vy ) }
-              | collides && s < 10 = [ ]
-              | collides && s > 10 = [ shard 0.2, shard (-0.2) ]
-              | otherwise = [ a ]
+            angle = atan2 vy vx
+            speed = sqrt (vx * vx + vy * vy) * 1.5
+
+            shard f
+              = Asteroid (s / 2) r ( x', y') ( vx', vy' )
               where
-                angle = atan2 vy vx
-                speed = sqrt (vx * vx + vy * vy)
-
-                shard f
-                  = a { aSize = s / 2, aVel = ( speed * cos (angle + f)
-                                              , speed * sin (angle + f) )}
-
-                collides
-                  = abs (x - x') <= s && abs (y - y') <= s
-
-
-updateAsteroid :: GLfloat -> GLfloat -> GLfloat -> Asteroid -> Asteroid
-updateAsteroid dt w h a@Asteroid { aSize = s, aPos = ( x, y ), aVel = ( vx, vy ) }
-  = a { aPos = ( wrap (x + vx * dt) w, wrap (y + vy * dt) h ) }
+                vx' = speed * cos (angle + f)
+                vy' = speed * sin (angle + f)
 
 
 genAsteroid :: State -> IO ()
@@ -263,8 +312,7 @@ genAsteroid State { sSize, sAsteroids } = do
       a = Asteroid (10.0 + 30.0 * size) 
                    rot
                    ( clamp x 0 w, clamp y 0 h ) 
-                   ( -vx / 5.0, -vy / 5.0 )
-
+                   ( -vx / 10.0, -vy / 10.0 )
 
   sAsteroids $= a : asteroids
 
@@ -304,6 +352,11 @@ keyboardUp State { sBullets, sRot, sPos } ' ' _pos = do
   rot      <- get sRot
   ( x, y ) <- get sPos
   sBullets $= (Bullet ( x, y ) rot : bullets)
+keyboardUp State {..} 'x' _pos = do
+  lives <- get sLives
+  when (lives <= 0) $ do
+    sLives $= 3
+    sScore $= 0
 keyboardUp _state _char _pos
   = postRedisplay Nothing
 
@@ -316,6 +369,7 @@ main = do
   ( _pname, _args ) <- getArgsAndInitialize
   _window           <- createWindow "Haskell Asteroids"
 
+  globalKeyRepeat $= GlobalKeyRepeatOff
 
   state <- State <$> newIORef ( 800, 600 )
                  <*> newIORef ( 400, 300 )
@@ -323,20 +377,17 @@ main = do
                  <*> newIORef 0
                  <*> newIORef False
                  <*> newIORef False
-                 <*> newIORef []
-                 <*> newIORef []
-                 <*> newIORef 20
+                 <*> newIORef [ ]
+                 <*> newIORef [ ]
+                 <*> newIORef 5
                  <*> (getCurrentTime >>= newIORef)
                  <*> newIORef 0
+                 <*> newIORef 3
 
-
-  globalKeyRepeat $= GlobalKeyRepeatOff
-
-
-  displayCallback       $= render state
-  idleCallback          $= Just (idle state)
-  reshapeCallback       $= Just (reshape state)
-  keyboardCallback      $= Just (keyboardDown state)
-  keyboardUpCallback    $= Just (keyboardUp state)
+  displayCallback    $= render state
+  idleCallback       $= Just (idle state)
+  reshapeCallback    $= Just (reshape state)
+  keyboardCallback   $= Just (keyboardDown state)
+  keyboardUpCallback $= Just (keyboardUp state)
 
   mainLoop
